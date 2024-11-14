@@ -1,0 +1,15 @@
+torch
+torchvision
+torchaudio
+numpy
+pandas
+matplotlib
+scikit-learn
+seaborn
+PyWavelets
+lightgbm
+xgboost
+scipy
+tqdm
+
+pip install torch torchvision torchaudio numpy pandas matplotlib scikit-learn seaborn PyWavelets lightgbm xgboost scipy tqdm
