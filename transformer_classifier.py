@@ -79,7 +79,7 @@ class PowerQualityAnalysis:
             'test_accuracies': []
         }
 
-    def generate_synthetic_dataset(self, n_samples=30):
+    def generate_synthetic_dataset(self, n_samples=10):
         """Generate synthetic dataset with memory efficiency"""
         logging.info(f"Generating {n_samples} synthetic signals...")
         t = np.linspace(0, self.signal_duration, int(self.sampling_rate * self.signal_duration))

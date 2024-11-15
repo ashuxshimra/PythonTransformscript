@@ -23,7 +23,7 @@ from sklearn.model_selection import cross_val_score
 from sklearn.metrics import accuracy_score
 import seaborn as sns
 from sklearn.metrics import precision_score, recall_score, f1_score
-from scipy import stats
+from lightgbm_classifier import LightGBMPowerQualityAnalyzer
 
 from ensemble_classifier import AdvancedPowerQualityAnalyzer
 from transformer_classifier import PowerQualityAnalysis
@@ -34,12 +34,19 @@ warnings.filterwarnings('ignore')
 class PowerQualityComparison:
     def __init__(self):
         """Initialize the comparison framework with optimized settings"""
-
+        self.lightgbm_analyzer = LightGBMPowerQualityAnalyzer()
         self.base_tariff = 1.0  # Base electricity rate
         self.quality_multipliers = {
             0: 1.0,    # High quality - standard rate
             1: 0.8,    # Medium quality - 20% discount
             2: 0.6     # Low quality - 40% discount
+        }
+        self.results = {
+            'ensemble': {},
+            'transformer': {},
+            'lightgbm': {},
+            'comparison': {},
+            'tariff_analysis': {}
         }
 
         # Set memory-efficient configurations
@@ -58,9 +65,126 @@ class PowerQualityComparison:
         self.results = {
             'ensemble': {},
             'transformer': {},
-            'comparison': {}
+            'lightgbm': {},
+            'comparison': {},
+            'tariff_analysis': {}
         }
-    
+        
+
+    def generate_tariff_plots(self):
+        """Generate comprehensive tariff analysis plots"""
+        try:
+            # 1. Tariff Distribution by Model and Quality Class
+            plt.figure(figsize=(12, 6))
+            
+            models = ['transformer', 'ensemble', 'lightgbm']
+            quality_labels = ['High', 'Medium', 'Low']
+            
+            data = []
+            for model in models:
+                predictions = self.results[model]['predictions']
+                tariffs = self.calculate_tariffs(predictions)[0]
+                true_labels = self.results[model]['true_labels']
+                
+                for i, pred in enumerate(predictions):
+                    data.append({
+                        'Model': model.capitalize(),
+                        'Quality': quality_labels[true_labels[i]],
+                        'Tariff': tariffs[i]
+                    })
+            
+            df = pd.DataFrame(data)
+            sns.boxplot(x='Quality', y='Tariff', hue='Model', data=df)
+            plt.title('Tariff Distribution by Power Quality Class and Model')
+            plt.savefig(self.output_dir / 'plots' / 'tariff_quality_distribution.png')
+            plt.close()
+            
+            # 2. Revenue Impact Analysis
+            plt.figure(figsize=(10, 6))
+            revenue_data = []
+            for model in models:
+                tariffs = self.calculate_tariffs(self.results[model]['predictions'])[0]
+                revenue_data.append({
+                    'Model': model.capitalize(),
+                    'Total Revenue': np.sum(tariffs),
+                    'Mean Tariff': np.mean(tariffs),
+                    'Std Tariff': np.std(tariffs)
+                })
+            
+            revenue_df = pd.DataFrame(revenue_data)
+            ax = revenue_df.plot(x='Model', y='Total Revenue', kind='bar')
+            plt.title('Total Revenue Comparison by Model')
+            plt.ylabel('Revenue Units')
+            for i, v in enumerate(revenue_df['Total Revenue']):
+                ax.text(i, v, f'${v:,.2f}', ha='center')
+            plt.tight_layout()
+            plt.savefig(self.output_dir / 'plots' / 'revenue_comparison.png')
+            plt.close()
+            
+            # 3. Tariff Accuracy Analysis
+            plt.figure(figsize=(12, 6))
+            accuracy_data = []
+            for model in models:
+                predictions = self.results[model]['predictions']
+                true_labels = self.results[model]['true_labels']
+                tariffs = self.calculate_tariffs(predictions)[0]
+                true_tariffs = self.calculate_tariffs(true_labels)[0]
+                
+                mae = np.mean(np.abs(tariffs - true_tariffs))
+                mape = np.mean(np.abs((tariffs - true_tariffs) / true_tariffs)) * 100
+                
+                accuracy_data.append({
+                    'Model': model.capitalize(),
+                    'MAE': mae,
+                    'MAPE': mape
+                })
+            
+            acc_df = pd.DataFrame(accuracy_data)
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+            
+            acc_df.plot(x='Model', y='MAE', kind='bar', ax=ax1)
+            ax1.set_title('Mean Absolute Error in Tariff Prediction')
+            ax1.set_ylabel('MAE ($)')
+            
+            acc_df.plot(x='Model', y='MAPE', kind='bar', ax=ax2)
+            ax2.set_title('Mean Absolute Percentage Error')
+            ax2.set_ylabel('MAPE (%)')
+            
+            plt.tight_layout()
+            plt.savefig(self.output_dir / 'plots' / 'tariff_accuracy.png')
+            plt.close()
+            
+            # 4. Economic Impact Analysis
+            plt.figure(figsize=(10, 6))
+            impact_data = []
+            for model in models:
+                predictions = self.results[model]['predictions']
+                true_labels = self.results[model]['true_labels']
+                
+                # Calculate revenue difference
+                pred_tariffs = self.calculate_tariffs(predictions)[0]
+                true_tariffs = self.calculate_tariffs(true_labels)[0]
+                revenue_diff = np.sum(pred_tariffs - true_tariffs)
+                
+                impact_data.append({
+                    'Model': model.capitalize(),
+                    'Revenue Impact': revenue_diff
+                })
+            
+            impact_df = pd.DataFrame(impact_data)
+            ax = impact_df.plot(x='Model', y='Revenue Impact', kind='bar')
+            plt.title('Economic Impact of Model Predictions')
+            plt.ylabel('Revenue Difference ($)')
+            for i, v in enumerate(impact_df['Revenue Impact']):
+                ax.text(i, v, f'${v:,.2f}', ha='center')
+            plt.tight_layout()
+            plt.savefig(self.output_dir / 'plots' / 'economic_impact.png')
+            plt.close()
+            
+        except Exception as e:
+            logging.error(f"Error generating tariff plots: {str(e)}")
+            raise
+
     def calculate_tariffs(self, predictions):
         """Calculate tariffs based on power quality predictions"""
         try:
@@ -358,10 +482,32 @@ class PowerQualityComparison:
         """Train both models with memory-efficient settings"""
         try:
             # Memory-efficient settings for data preparation
+             # Memory-efficient settings for data preparation
             batch_size = 4  # Reduced batch size
             logging.info("Preparing data for transformer...")
             train_loader, test_loader, X_test_trans, y_test_trans = \
                 self.transformer_analyzer.prepare_data(signals, labels, batch_size=batch_size)
+            
+            # Initialize results dictionary
+            results = {}
+            
+            logging.info("Training LightGBM model...")
+            start_time = time.time()
+            features = self.lightgbm_analyzer.extract_enhanced_features(signals)
+            X_train, X_test, y_train, y_test = train_test_split(
+                features, labels, test_size=0.2, random_state=42
+            )
+            
+            lightgbm_model = self.lightgbm_analyzer.build_model()
+            lightgbm_model.fit(X_train, y_train)
+            lightgbm_training_time = time.time() - start_time
+            
+            results['lightgbm'] = {
+                'model': lightgbm_model,
+                'training_time': lightgbm_training_time,
+                'test_data': (X_test, y_test),
+                'feature_names': self.lightgbm_analyzer.feature_names
+            }
             
             # Train transformer with reduced parameters
             logging.info("Training transformer model...")
@@ -389,20 +535,21 @@ class PowerQualityComparison:
             ensemble_model.fit(X_train, y_train)
             ensemble_training_time = time.time() - start_time
             
-            return {
-                'transformer': {
-                    'model': transformer_model,
-                    'history': transformer_history,
-                    'training_time': transformer_training_time,
-                    'test_data': (X_test_trans, y_test_trans),
-                    'data_loader': test_loader
-                },
-                'ensemble': {
-                    'model': ensemble_model,
-                    'training_time': ensemble_training_time,
-                    'test_data': (X_test_ens, y_test_ens)
-                }
+            results['transformer'] = {
+                'model': transformer_model,
+                'history': transformer_history,
+                'training_time': transformer_training_time,
+                'test_data': (X_test_trans, y_test_trans),
+                'data_loader': test_loader
             }
+            
+            results['ensemble'] = {
+                'model': ensemble_model,
+                'training_time': ensemble_training_time,
+                'test_data': (X_test_ens, y_test_ens)
+            }
+            
+            return results
             
         except Exception as e:
             logging.error(f"Error training models: {str(e)}")
@@ -485,16 +632,32 @@ class PowerQualityComparison:
             *training_results['ensemble']['test_data']
             )
             gc.collect()
-        
+
+            logging.info("Evaluating LightGBM model...")
+            lightgbm_metrics = self._evaluate_ensemble(  # We can reuse this method since LightGBM has the same interface
+            training_results['lightgbm']['model'],
+            *training_results['lightgbm']['test_data']
+            )
+            gc.collect()
         # Store basic results
             self.results['transformer'].update(transformer_metrics)
             self.results['ensemble'].update(ensemble_metrics)
+            self.results['lightgbm'].update(lightgbm_metrics)
+
         
         # Compare training times
-            self.results['comparison']['training_time_ratio'] = \
-            training_results['transformer']['training_time'] / \
-            training_results['ensemble']['training_time']
-
+            self.results['comparison']['training_time_ratio'] = {
+            'transformer_to_ensemble': training_results['transformer']['training_time'] / training_results['ensemble']['training_time'],
+            'transformer_to_lightgbm': training_results['transformer']['training_time'] / training_results['lightgbm']['training_time'],
+            'ensemble_to_lightgbm': training_results['ensemble']['training_time'] / training_results['lightgbm']['training_time']
+             }
+            # Calculate tariffs for all models
+            for model_name in ['transformer', 'ensemble', 'lightgbm']:
+             tariffs, tariff_stats = self.calculate_tariffs(self.results[model_name]['predictions'])
+             self.results['tariff_analysis'][model_name] = {
+                'tariffs': tariffs,
+                **tariff_stats
+            }
         # 2. Calculate Tariffs
             logging.info("Calculating tariffs...")
             transformer_tariffs, transformer_tariff_stats = self.calculate_tariffs(
@@ -583,6 +746,12 @@ class PowerQualityComparison:
                 'training_time': training_results['ensemble']['training_time'],
                 'feature_count': training_results['ensemble']['model'].named_steps['classifier'].n_features_in_,
                 'max_depth': training_results['ensemble']['model'].named_steps['classifier'].max_depth
+            },
+            'lightgbm': {
+            'n_estimators': training_results['lightgbm']['model'].named_steps['classifier'].n_estimators,
+            'training_time': training_results['lightgbm']['training_time'],
+            'feature_count': len(training_results['lightgbm']['feature_names']),
+            'max_depth': training_results['lightgbm']['model'].named_steps['classifier'].get_params()['max_depth']
             }
         }
 
@@ -641,7 +810,9 @@ class PowerQualityComparison:
             plt.figure(figsize=(10, 6))
             accuracies = {
                 'Transformer': self.results['transformer']['metrics']['accuracy'],
-                'Ensemble': self.results['ensemble']['metrics']['accuracy']
+                'Ensemble': self.results['ensemble']['metrics']['accuracy'],
+                'LightGBM': self.results['lightgbm']['metrics']['accuracy']
+
             }
             plt.bar(list(accuracies.keys()), list(accuracies.values()))
             plt.title('Model Accuracy Comparison')
@@ -652,28 +823,26 @@ class PowerQualityComparison:
             plt.savefig(self.output_dir / 'plots' / 'accuracy_comparison.png')
             plt.close()
 
-            # Create confusion matrices
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+           # Create confusion matrices - Fixed version with three subplots
+            fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))  # Changed to create three axes
             labels = ['High', 'Medium', 'Low']
             
-            # Transformer confusion matrix
-            cm_transformer = confusion_matrix(
-                self.results['transformer']['true_labels'],
-                self.results['transformer']['predictions']
+            # Confusion matrices for all three models
+            models = {
+                'Transformer': (self.results['transformer'], ax1),
+                'Ensemble': (self.results['ensemble'], ax2),
+                'LightGBM': (self.results['lightgbm'], ax3)
+             }
+        
+            for model_name, (results, ax) in models.items():
+                cm = confusion_matrix(
+                     results['true_labels'],
+                     results['predictions']
             )
-            sns.heatmap(cm_transformer, annot=True, fmt='d', ax=ax1, 
-                       xticklabels=labels, yticklabels=labels, cmap='Blues')
-            ax1.set_title('Transformer Confusion Matrix')
-            
-            # Ensemble confusion matrix
-            cm_ensemble = confusion_matrix(
-                self.results['ensemble']['true_labels'],
-                self.results['ensemble']['predictions']
-            )
-            sns.heatmap(cm_ensemble, annot=True, fmt='d', ax=ax2,
-                       xticklabels=labels, yticklabels=labels, cmap='Blues')
-            ax2.set_title('Ensemble Confusion Matrix')
-            
+                sns.heatmap(cm, annot=True, fmt='d', ax=ax,
+                            xticklabels=labels, yticklabels=labels, cmap='Blues')
+                ax.set_title(f'{model_name} Confusion Matrix')
+        
             plt.tight_layout()
             plt.savefig(self.output_dir / 'plots' / 'confusion_matrices.png')
             plt.close()
@@ -753,106 +922,105 @@ class PowerQualityComparison:
     
     # In comparison.py, modify the save_results method
 
-def save_results(self):
-    """Save results with enhanced publication metrics"""
-    try:
+    def save_results(self):
+        """Save results with enhanced publication metrics"""
+        try:
         # Save metrics as JSON
-        metrics_path = self.output_dir / 'metrics' / 'results.json'
-        with open(metrics_path, 'w') as f:
-            json.dump(self.results, f, indent=4, default=str)
+            metrics_path = self.output_dir / 'metrics' / 'results.json'
+            with open(metrics_path, 'w') as f:
+                json.dump(self.results, f, indent=4, default=str)
         
         # Generate basic summary report (existing functionality)
-        report_path = self.output_dir / 'metrics' / 'summary_report.txt'
-        with open(report_path, 'w') as f:
-            f.write("Power Quality Classification - Model Comparison Report\n")
-            f.write("================================================\n\n")
+            report_path = self.output_dir / 'metrics' / 'summary_report.txt'
+            with open(report_path, 'w') as f:
+                f.write("Power Quality Classification - Model Comparison Report\n")
+                f.write("================================================\n\n")
             
             # Model accuracies
-            f.write("1. Model Accuracies:\n")
-            if 'accuracy' in self.results['transformer']['metrics']:
-                f.write(f"   Transformer: {self.results['transformer']['metrics']['accuracy']:.4f}\n")
-            if 'accuracy' in self.results['ensemble']['metrics']:
-                f.write(f"   Ensemble: {self.results['ensemble']['metrics']['accuracy']:.4f}\n")
-            f.write("\n")
-            
-            # Training time comparison
-            f.write("2. Training Time Comparison:\n")
-            f.write(f"   Ratio (Transformer/Ensemble): {self.results['comparison']['training_time_ratio']:.2f}\n\n")
-            
-            # Class-wise performance
-            f.write("3. Class-wise Performance:\n")
-            for model in ['transformer', 'ensemble']:
-                f.write(f"\n   {model.capitalize()} Model:\n")
-                for class_name in ['0', '1', '2']:  # Using numerical class labels instead of High/Medium/Low
-                    if class_name in self.results[model]['metrics']:
-                        metrics = self.results[model]['metrics'][class_name]
-                        f.write(f"   Class {class_name} (")
-                        if class_name == '0':
-                            f.write("High Quality):\n")
-                        elif class_name == '1':
-                            f.write("Medium Quality):\n")
-                        else:
-                            f.write("Low Quality):\n")
-                        f.write(f"      Precision: {metrics['precision']:.4f}\n")
-                        f.write(f"      Recall: {metrics['recall']:.4f}\n")
-                        f.write(f"      F1-score: {metrics['f1-score']:.4f}\n")
-            
-            # Generate enhanced publication report with additional metrics
-            f.write("\n4. Tariff Analysis:\n")
-            if 'tariff_analysis' in self.results:
-                for model in ['transformer', 'ensemble']:
-                    if model in self.results['tariff_analysis']:
-                        stats = self.results['tariff_analysis'][model]
-                        f.write(f"\n   {model.capitalize()} Model:\n")
-                        f.write(f"      Mean Tariff: ${stats['mean_tariff']:.4f}\n")
-                        f.write(f"      Min Tariff: ${stats['min_tariff']:.4f}\n")
-                        f.write(f"      Max Tariff: ${stats['max_tariff']:.4f}\n")
-                        f.write(f"      Total Revenue: ${stats['total_revenue']:.2f}\n")
-
-            # Statistical Analysis
-            f.write("\n5. Statistical Analysis:\n")
-            if 'statistical_tests' in self.results:
-                stats = self.results['statistical_tests']
-                f.write(f"   McNemar's Test Statistic: {stats['mcnemar_statistic']:.4f}\n")
-                f.write(f"   P-value: {stats['p_value']:.4f}\n")
-                f.write(f"   Statistical Significance: {'Yes' if stats['p_value'] < 0.05 else 'No'}\n")
-
-            # Quality-wise Analysis
-            f.write("\n6. Quality-wise Analysis:\n")
-            if 'quality_metrics' in self.results:
-                for quality, metrics in self.results['quality_metrics'].items():
-                    quality_name = 'High' if quality == 'quality_0' else 'Medium' if quality == 'quality_1' else 'Low'
-                    f.write(f"\n   {quality_name} Quality Power:\n")
-                    f.write(f"      Transformer Accuracy: {metrics['transformer_accuracy']:.4f}\n")
-                    f.write(f"      Ensemble Accuracy: {metrics['ensemble_accuracy']:.4f}\n")
-                    f.write(f"      Sample Count: {metrics['sample_count']}\n")
-
-            # Model Complexity
-            f.write("\n7. Model Complexity Analysis:\n")
-            if 'complexity_metrics' in self.results:
-                f.write("\n   Transformer Model:\n")
-                trans_metrics = self.results['complexity_metrics']['transformer']
-                f.write(f"      Parameters: {trans_metrics['parameters']}\n")
-                f.write(f"      Training Time: {trans_metrics['training_time']:.2f} seconds\n")
+                f.write("1. Model Accuracies:\n")
+                for model in ['transformer', 'ensemble', 'lightgbm']:
+                    if model in self.results and 'metrics' in self.results[model]:
+                        f.write(f"   {model.capitalize()}: {self.results[model]['metrics']['accuracy']:.4f}\n")
+                f.write("\n")
                 
-                f.write("\n   Ensemble Model:\n")
-                ens_metrics = self.results['complexity_metrics']['ensemble']
-                f.write(f"      Number of Estimators: {ens_metrics['n_estimators']}\n")
-                f.write(f"      Training Time: {ens_metrics['training_time']:.2f} seconds\n")
-                f.write(f"      Feature Count: {ens_metrics['feature_count']}\n")
+                # Training time comparison
+                f.write("2. Training Time Comparison:\n")
+                if 'comparison' in self.results and 'training_time_ratio' in self.results['comparison']:
+                    ratios = self.results['comparison']['training_time_ratio']
+                    if isinstance(ratios, dict):
+                        for ratio_name, ratio_value in ratios.items():
+                            f.write(f"   {ratio_name}: {ratio_value:.2f}\n")
+                    else:
+                        f.write(f"   Ratio (Transformer/Ensemble): {ratios:.2f}\n")
+                f.write("\n")
+                
+                # Class-wise performance
+                f.write("3. Class-wise Performance:\n")
+                for model in ['transformer', 'ensemble', 'lightgbm']:
+                    if model in self.results and 'metrics' in self.results[model]:
+                        f.write(f"\n   {model.capitalize()} Model:\n")
+                        for class_name in ['0', '1', '2']:
+                            if class_name in self.results[model]['metrics']:
+                                metrics = self.results[model]['metrics'][class_name]
+                                f.write(f"   Class {class_name} (")
+                                if class_name == '0':
+                                    f.write("High Quality):\n")
+                                elif class_name == '1':
+                                    f.write("Medium Quality):\n")
+                                else:
+                                    f.write("Low Quality):\n")
+                                f.write(f"      Precision: {metrics['precision']:.4f}\n")
+                                f.write(f"      Recall: {metrics['recall']:.4f}\n")
+                                f.write(f"      F1-score: {metrics['f1-score']:.4f}\n")
+                
+                # Tariff Analysis
+                f.write("\n4. Tariff Analysis:\n")
+                if 'tariff_analysis' in self.results:
+                    for model in ['transformer', 'ensemble', 'lightgbm']:
+                        if model in self.results['tariff_analysis']:
+                            stats = self.results['tariff_analysis'][model]
+                            f.write(f"\n   {model.capitalize()} Model:\n")
+                            if isinstance(stats, dict):  # Check if stats is a dictionary
+                                for stat_name in ['mean_tariff', 'min_tariff', 'max_tariff', 'total_revenue']:
+                                    if stat_name in stats:
+                                        formatted_name = stat_name.replace('_', ' ').title()
+                                        if 'revenue' in stat_name:
+                                            f.write(f"      {formatted_name}: ${stats[stat_name]:.2f}\n")
+                                        else:
+                                            f.write(f"      {formatted_name}: ${stats[stat_name]:.4f}\n")
 
-        # Save detailed CSV reports for further analysis
-        metrics_df = pd.DataFrame({
-            'Metric': self.results['comparison'].keys(),
-            'Value': self.results['comparison'].values()
-        })
-        metrics_df.to_csv(self.output_dir / 'metrics' / 'detailed_metrics.csv', index=False)
+                # Statistical Analysis
+                f.write("\n5. Statistical Analysis:\n")
+                if 'statistical_tests' in self.results:
+                    stats = self.results['statistical_tests']
+                    f.write(f"   McNemar's Test Statistic: {stats.get('mcnemar_statistic', 'N/A'):.4f}\n")
+                    f.write(f"   P-value: {stats.get('p_value', 'N/A'):.4f}\n")
+                    f.write(f"   Statistical Significance: {'Yes' if stats.get('p_value', 1) < 0.05 else 'No'}\n")
+
+                # Quality-wise Analysis
+                f.write("\n6. Quality-wise Analysis:\n")
+                if 'quality_metrics' in self.results:
+                    for quality, metrics in self.results['quality_metrics'].items():
+                        quality_name = 'High' if quality == 'quality_0' else 'Medium' if quality == 'quality_1' else 'Low'
+                        f.write(f"\n   {quality_name} Quality Power:\n")
+                        for model in ['transformer', 'ensemble', 'lightgbm']:
+                            if f'{model}_accuracy' in metrics:
+                                f.write(f"      {model.capitalize()} Accuracy: {metrics[f'{model}_accuracy']:.4f}\n")
+                        f.write(f"      Sample Count: {metrics.get('sample_count', 'N/A')}\n")
+
+            # Save detailed CSV reports
+            metrics_df = pd.DataFrame({
+                'Metric': self.results['comparison'].keys(),
+                'Value': self.results['comparison'].values()
+            })
+            metrics_df.to_csv(self.output_dir / 'metrics' / 'detailed_metrics.csv', index=False)
+            
+            logging.info("Results saved successfully")
         
-        logging.info("Enhanced results saved successfully")
-        
-    except Exception as e:
-        logging.error(f"Error saving results: {str(e)}")
-        logging.debug(f"Detailed error: {str(e)}", exc_info=True)
+        except Exception as e:
+            logging.error(f"Error saving results: {str(e)}")
+            logging.debug(f"Detailed error: {str(e)}", exc_info=True)
+            raise
 
 def main():
     # Track memory usage
@@ -871,7 +1039,7 @@ def main():
         
         # Generate smaller dataset with progress tracking
         logging.info("Generating dataset...")
-        signals, labels = comparison.generate_dataset(n_samples=30)  # Start with small sample
+        signals, labels = comparison.generate_dataset(n_samples=10)  # Start with small sample
         gc.collect()
         
         # Train models with memory management
