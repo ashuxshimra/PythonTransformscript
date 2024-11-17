@@ -1,8 +1,12 @@
 # comparison.py
 import numpy as np
+import matplotlib
+matplotlib.use('TkAgg')
+import matplotlib.pyplot as plt
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+from sklearn.metrics import confusion_matrix, roc_curve, auc
 from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
 from sklearn.model_selection import train_test_split
 import torch
@@ -24,6 +28,7 @@ from sklearn.metrics import accuracy_score
 import seaborn as sns
 from sklearn.metrics import precision_score, recall_score, f1_score
 from lightgbm_classifier import LightGBMPowerQualityAnalyzer
+from mpl_toolkits.mplot3d import Axes3D  # Add this line
 
 from ensemble_classifier import AdvancedPowerQualityAnalyzer
 from transformer_classifier import PowerQualityAnalysis
@@ -660,23 +665,13 @@ class PowerQualityComparison:
             }
         # 2. Calculate Tariffs
             logging.info("Calculating tariffs...")
-            transformer_tariffs, transformer_tariff_stats = self.calculate_tariffs(
-            self.results['transformer']['predictions']
-            )
-            ensemble_tariffs, ensemble_tariff_stats = self.calculate_tariffs(
-            self.results['ensemble']['predictions']
-            )
-        
-            self.results['tariff_analysis'] = {
-            'transformer': {
-                'tariffs': transformer_tariffs,
-                **transformer_tariff_stats
-            },
-            'ensemble': {
-                'tariffs': ensemble_tariffs,
-                **ensemble_tariff_stats
-            }
-            }
+            for model_name in ['transformer', 'ensemble', 'lightgbm']:
+             if model_name in self.results and 'predictions' in self.results[model_name]:
+              tariffs, tariff_stats = self.calculate_tariffs(self.results[model_name]['predictions'])
+              self.results['tariff_analysis'][model_name] = {
+                 'tariffs': tariffs,
+                 **tariff_stats
+              }
 
         # 3. Statistical Analysis
             logging.info("Performing statistical analysis...")
@@ -705,31 +700,28 @@ class PowerQualityComparison:
             logging.info("Performing quality-wise analysis...")
             quality_metrics = {}
             for quality in range(3):  # 0: High, 1: Medium, 2: Low
-                mask = true_labels == quality
-                quality_name = f'quality_{quality}'
-            
-            # Calculate metrics for each quality level
-                quality_metrics[quality_name] = {
-                'transformer_accuracy': accuracy_score(
-                    true_labels[mask], transformer_preds[mask]
-                ),
-                'ensemble_accuracy': accuracy_score(
-                    true_labels[mask], ensemble_preds[mask]
-                ),
-                'sample_count': np.sum(mask),
-                'transformer_predictions': {
-                    'precision': precision_score(true_labels[mask], transformer_preds[mask], average='weighted'),
-                    'recall': recall_score(true_labels[mask], transformer_preds[mask], average='weighted'),
-                    'f1': f1_score(true_labels[mask], transformer_preds[mask], average='weighted')
-                },
-                'ensemble_predictions': {
-                    'precision': precision_score(true_labels[mask], ensemble_preds[mask], average='weighted'),
-                    'recall': recall_score(true_labels[mask], ensemble_preds[mask], average='weighted'),
-                    'f1': f1_score(true_labels[mask], ensemble_preds[mask], average='weighted')
-                }
+             mask = true_labels == quality
+             quality_name = f'quality_{quality}'
+    
+             quality_metrics[quality_name] = {
+                 'sample_count': np.sum(mask),
             }
-        
-            self.results['quality_metrics'] = quality_metrics
+    
+    # Calculate metrics for each model
+            for model_name in ['transformer', 'ensemble', 'lightgbm']:
+                if model_name in self.results and 'predictions' in self.results[model_name]:
+                    model_preds = self.results[model_name]['predictions']
+                    quality_metrics[quality_name][f'{model_name}_accuracy'] = accuracy_score(
+                    true_labels[mask], model_preds[mask]
+                    ) if np.sum(mask) > 0 else 0.0
+            
+                    quality_metrics[quality_name][f'{model_name}_predictions'] = {
+                    'precision': precision_score(true_labels[mask], model_preds[mask], average='weighted', zero_division=0),
+                    'recall': recall_score(true_labels[mask], model_preds[mask], average='weighted', zero_division=0),
+                    'f1': f1_score(true_labels[mask], model_preds[mask], average='weighted', zero_division=0)
+                    }
+
+                    self.results['quality_metrics'] = quality_metrics
 
         # 5. Model Complexity Analysis
             logging.info("Analyzing model complexity...")
@@ -803,124 +795,213 @@ class PowerQualityComparison:
          raise
 
     def generate_comparative_plots(self):
-        """Generate plots with memory management"""
+        """Generate plots with interactive visualization"""
         logging.info("Generating comparative plots...")
         try:
-            # Create figure for accuracy comparison
-            plt.figure(figsize=(10, 6))
-            accuracies = {
-                'Transformer': self.results['transformer']['metrics']['accuracy'],
-                'Ensemble': self.results['ensemble']['metrics']['accuracy'],
-                'LightGBM': self.results['lightgbm']['metrics']['accuracy']
-
-            }
-            plt.bar(list(accuracies.keys()), list(accuracies.values()))
-            plt.title('Model Accuracy Comparison')
-            plt.ylabel('Accuracy')
-            plt.ylim(0, 1)
-            for i, v in enumerate(accuracies.values()):
-                plt.text(i, v + 0.01, f'{v:.3f}', ha='center')
-            plt.savefig(self.output_dir / 'plots' / 'accuracy_comparison.png')
-            plt.close()
-
-           # Create confusion matrices - Fixed version with three subplots
-            fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))  # Changed to create three axes
-            labels = ['High', 'Medium', 'Low']
+        # Set style for better looking plots
+           plt.style.use('default')
+           figures = []
+        
+        # 1. ROC Curves
+           plt.figure(figsize=(12, 8))
+           current_fig = plt.gcf()
+           figures.append(current_fig)
+           current_fig.canvas.manager.set_window_title('ROC Curves Comparison')
+           for i, class_name in enumerate(['High', 'Medium', 'Low']):
+             model_styles = {
+                'transformer': ('-', 'blue'),
+                'ensemble': ('--', 'red'),
+                'lightgbm': (':', 'green')
+             }
             
-            # Confusion matrices for all three models
-            models = {
-                'Transformer': (self.results['transformer'], ax1),
-                'Ensemble': (self.results['ensemble'], ax2),
-                'LightGBM': (self.results['lightgbm'], ax3)
+             for model_name, (line_style, color) in model_styles.items():
+                 if model_name in self.results and 'probabilities' in self.results[model_name]:
+                     fpr, tpr, _ = roc_curve(
+                         self.results[model_name]['true_labels'] == i,
+                         self.results[model_name]['probabilities'][:, i]
+                     )
+                     roc_auc = auc(fpr, tpr)
+                     plt.plot(fpr, tpr, linestyle=line_style, color=color,
+                            label=f'{model_name.capitalize()} - {class_name} (AUC = {roc_auc:.2f})')
+
+           plt.plot([0, 1], [0, 1], 'k--')
+           plt.xlabel('False Positive Rate')
+           plt.ylabel('True Positive Rate')
+           plt.title('ROC Curves Comparison')
+           plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+           plt.tight_layout()
+           plt.savefig(self.output_dir / 'plots' / 'roc_curves.png')
+            
+        # 2. Confusion Matrices
+           fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))
+           figures.append(fig)  # Add to figures list
+           fig.canvas.manager.set_window_title('Confusion Matrices Comparison')
+           labels = ['High', 'Medium', 'Low']
+        
+           models = {
+            'Transformer': (self.results['transformer'], ax1),
+            'Ensemble': (self.results['ensemble'], ax2),
+            'LightGBM': (self.results['lightgbm'], ax3)
              }
         
-            for model_name, (results, ax) in models.items():
-                cm = confusion_matrix(
-                     results['true_labels'],
-                     results['predictions']
+           for model_name, (results, ax) in models.items():
+             cm = confusion_matrix(
+                results['true_labels'],
+                results['predictions']
             )
-                sns.heatmap(cm, annot=True, fmt='d', ax=ax,
-                            xticklabels=labels, yticklabels=labels, cmap='Blues')
-                ax.set_title(f'{model_name} Confusion Matrix')
+            # Calculate percentages for annotations
+             cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+             im = ax.imshow(cm, cmap='Blues')
+
+            
+             # Add text annotations with both count and percentage
+             for i in range(cm.shape[0]):
+                for j in range(cm.shape[1]):
+                    text = f'{cm[i, j]}\n({cm_normalized[i, j]:.1%})'
+                    ax.text(j, i, text,
+                           ha="center", va="center",
+                           color="black" if cm[i, j] < cm.max()/2 else "white")
+            
+             ax.set_title(f'{model_name} Confusion Matrix')
+             ax.set_xlabel('Predicted')
+             ax.set_ylabel('True')
+             ax.set_xticks(np.arange(len(labels)))
+             ax.set_yticks(np.arange(len(labels)))
+             ax.set_xticklabels(labels)
+             ax.set_yticklabels(labels)
+            
+           plt.tight_layout()
+           plt.savefig(self.output_dir / 'plots' / 'confusion_matrices.png')
+
+        # 3. Prediction Confidence Distribution
+           plt.figure(figsize=(10, 6))
+           current_fig = plt.gcf()
+           figures.append(current_fig)  # Add to figures list
+           current_fig.canvas.manager.set_window_title('Prediction Confidence Distribution')
+           model_colors = {
+            'transformer': 'blue',
+            'ensemble': 'red',
+            'lightgbm': 'green'
+           }
         
-            plt.tight_layout()
-            plt.savefig(self.output_dir / 'plots' / 'confusion_matrices.png')
-            plt.close()
+           for model_name, color in model_colors.items():
+               if model_name in self.results and 'probabilities' in self.results[model_name]:
+                confidence = np.max(self.results[model_name]['probabilities'], axis=1)
+                plt.hist(confidence, alpha=0.5, label=model_name.capitalize(), 
+                        bins=20, color=color)
 
-            # Create ROC curves
-            plt.figure(figsize=(10, 8))
-            for i, class_name in enumerate(['High', 'Medium', 'Low']):
-                # Transformer ROC
-                fpr, tpr, _ = roc_curve(
-                    self.results['transformer']['true_labels'] == i,
-                    self.results['transformer']['probabilities'][:, i]
-                )
-                transformer_auc = auc(fpr, tpr)
-                plt.plot(fpr, tpr, label=f'Transformer - {class_name} (AUC = {transformer_auc:.2f})')
-                
-                # Ensemble ROC
-                fpr, tpr, _ = roc_curve(
-                    self.results['ensemble']['true_labels'] == i,
-                    self.results['ensemble']['probabilities'][:, i]
-                )
-                ensemble_auc = auc(fpr, tpr)
-                plt.plot(fpr, tpr, '--', label=f'Ensemble - {class_name} (AUC = {ensemble_auc:.2f})')
-            
-            plt.plot([0, 1], [0, 1], 'k--')
-            plt.xlabel('False Positive Rate')
-            plt.ylabel('True Positive Rate')
-            plt.title('ROC Curves Comparison')
-            plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-            plt.tight_layout()
-            plt.savefig(self.output_dir / 'plots' / 'roc_curves.png')
-            plt.close()
+           plt.xlabel('Prediction Confidence')
+           plt.ylabel('Count')
+           plt.title('Prediction Confidence Distribution')
+           plt.legend()
+           plt.tight_layout()
+           plt.savefig(self.output_dir / 'plots' / 'prediction_confidence.png')
 
-            # Create prediction confidence distribution
-            plt.figure(figsize=(10, 6))
-            transformer_conf = np.max(self.results['transformer']['probabilities'], axis=1)
-            ensemble_conf = np.max(self.results['ensemble']['probabilities'], axis=1)
-            
-            plt.hist(transformer_conf, alpha=0.5, label='Transformer', bins=20)
-            plt.hist(ensemble_conf, alpha=0.5, label='Ensemble', bins=20)
-            plt.xlabel('Prediction Confidence')
-            plt.ylabel('Count')
-            plt.title('Prediction Confidence Distribution')
-            plt.legend()
-            plt.tight_layout()
-            plt.savefig(self.output_dir / 'plots' / 'prediction_confidence.png')
-            plt.close()
+        # 4. Training Time Comparison
+           plt.figure(figsize=(10, 6))
+           current_fig = plt.gcf()
+           figures.append(current_fig)  # Add to figures list
+           current_fig.canvas.manager.set_window_title('Training Time Comparison')
+           models = ['Transformer', 'Ensemble', 'LightGBM']
+           times = [
+            self.results['complexity_metrics']['transformer']['training_time'],
+            self.results['complexity_metrics']['ensemble']['training_time'],
+            self.results['complexity_metrics']['lightgbm']['training_time']
+           ]
+           bars = plt.bar(models, times)
+           plt.title('Model Training Time Comparison')
+           plt.ylabel('Time (seconds)')
+           
+        # Add value labels on bars
+           for bar in bars:
+               height = bar.get_height()
+               plt.text(bar.get_x() + bar.get_width()/2., height,
+                    f'{height:.2f}s',
+                    ha='center', va='bottom')
+        
+           plt.tight_layout()
+           plt.savefig(self.output_dir / 'plots' / 'training_time.png')
+           
+           metrics_fig = self.generate_3d_metrics_plot()
+           figures.append(metrics_fig)
 
-            # Create training history plot
-            if 'history' in self.results['transformer']:
-                history = self.results['transformer']['history']
-                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-                
-                ax1.plot(history['train_losses'], label='Train')
-                ax1.plot(history['test_losses'], label='Validation')
-                ax1.set_title('Training Loss')
-                ax1.set_xlabel('Epoch')
-                ax1.set_ylabel('Loss')
-                ax1.legend()
-                
-                ax2.plot(history['train_accuracies'], label='Train')
-                ax2.plot(history['test_accuracies'], label='Validation')
-                ax2.set_title('Training Accuracy')
-                ax2.set_xlabel('Epoch')
-                ax2.set_ylabel('Accuracy')
-                ax2.legend()
-                
-                plt.tight_layout()
-                plt.savefig(self.output_dir / 'plots' / 'training_history.png')
-                plt.close()
+           for fig in figures:
+               fig.canvas.manager.show()
+        
+           plt.show(block=False)
 
         except Exception as e:
-            logging.error(f"Error generating plots: {str(e)}")
-            raise
-        finally:
-            plt.close('all')
-            gc.collect()
+         logging.error(f"Error generating plots: {str(e)}")
+         raise
     
-    # In comparison.py, modify the save_results method
+    
+    def generate_3d_metrics_plot(self):
+        """Generate interactive 3D plot comparing model metrics"""
+        from mpl_toolkits.mplot3d import Axes3D  # Add this import at the top of your file
+    
+        try:
+            plt.figure(figsize=(12, 8))
+            current_fig = plt.gcf()
+            current_fig.canvas.manager.set_window_title('3D Model Performance Overview')
+            ax = plt.axes(projection='3d')
+        
+        # Collect metrics for each model
+            models = ['Transformer', 'Ensemble', 'LightGBM']
+            metrics = {
+            model.lower(): {
+                'accuracy': self.results[model.lower()]['metrics']['accuracy'],
+                'tariff_mean': self.results['tariff_analysis'][model.lower()]['mean_tariff'],
+                'training_time': self.results['complexity_metrics'][model.lower()]['training_time']
+            } for model in models
+        }
+        
+        # Extract coordinates
+            xs = np.array([metrics[model.lower()]['accuracy'] for model in models])
+            ys = np.array([metrics[model.lower()]['tariff_mean'] for model in models])
+            zs = np.array([metrics[model.lower()]['training_time'] for model in models])
+        
+        # Normalize training time for better visualization
+            zs = (zs - np.min(zs)) / (np.max(zs) - np.min(zs))
+        
+        # Create scatter plot with different colors for each model
+            colors = ['blue', 'red', 'green']
+            scatter = ax.scatter(xs, ys, zs, c=colors, s=100)
+        
+        # Add connecting lines
+            ax.plot(xs, ys, zs, '--', color='gray', alpha=0.5)
+        
+        # Add labels for each point
+            for x, y, z, model in zip(xs, ys, zs, models):
+             ax.text(x, y, z, model, fontsize=8)
+        
+        # Set labels and title
+            ax.set_xlabel('Accuracy')
+            ax.set_ylabel('Mean Tariff ($)')
+            ax.set_zlabel('Normalized Training Time')
+            plt.title('3D Model Performance Comparison')
+        
+        # Add grid for better perspective
+            ax.grid(True)
+        
+        # Initial view angle
+            ax.view_init(elev=20, azim=45)
+        
+        # Add text box with summary statistics
+            stats_text = (
+            f"Model Statistics:\n"
+            f"Best Accuracy: {max(xs):.3f} ({models[np.argmax(xs)]})\n"
+            f"Best Tariff: ${min(ys):.2f} ({models[np.argmin(ys)]})\n"
+            f"Fastest Training: {models[np.argmin(zs)]}"
+        )
+            plt.figtext(0.02, 0.02, stats_text, fontsize=8, bbox=dict(facecolor='white', alpha=0.8))
+        
+            plt.tight_layout()
+        
+            return current_fig
+        
+        except Exception as e:
+         logging.error(f"Error generating 3D metrics plot: {str(e)}")
+        raise
 
     def save_results(self):
         """Save results with enhanced publication metrics"""
@@ -1031,18 +1112,18 @@ def main():
         # Set memory-efficient configurations
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
-        torch.set_num_threads(2)  # Limit CPU threads
+        torch.set_num_threads(2)
         
         # Initialize comparison framework
         logging.info("Initializing comparison framework...")
         comparison = PowerQualityComparison()
         
-        # Generate smaller dataset with progress tracking
+        # Generate dataset
         logging.info("Generating dataset...")
-        signals, labels = comparison.generate_dataset(n_samples=10)  # Start with small sample
+        signals, labels = comparison.generate_dataset(n_samples=10)  # Increased sample size
         gc.collect()
         
-        # Train models with memory management
+        # Train models
         logging.info("Training models...")
         training_results = comparison.train_models(signals, labels)
         gc.collect()
@@ -1050,30 +1131,32 @@ def main():
         # Evaluate models
         logging.info("Evaluating models...")
         results = comparison.evaluate_models(training_results)
-        del training_results  # Free memory
+        del training_results
         gc.collect()
         
-        # Generate plots with memory cleanup
+        # Generate plots
         logging.info("Generating plots...")
         comparison.generate_comparative_plots()
-        gc.collect()
         
         # Save results
         logging.info("Saving results...")
         comparison.save_results()
         
-        # Log memory usage and completion
+        # Log memory usage
         final_memory = process.memory_info().rss / 1024 / 1024
         logging.info(f"Memory usage: {final_memory - initial_memory:.2f} MB")
         logging.info("Comparison completed successfully")
+        
+         # Keep the program alive while showing plots
+        while plt.get_fignums():  # While there are still open figures
+            plt.pause(0.1)
         
     except Exception as e:
         logging.error(f"Comparison failed: {str(e)}")
         raise
     finally:
-        # Final cleanup
+        # Don't call plt.close('all') here to keep windows open
         gc.collect()
-        plt.close('all')
 
 if __name__ == "__main__":
     # Set up basic logging configuration
